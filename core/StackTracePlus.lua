@@ -445,6 +445,16 @@ end
 
 -- Note: The below code is not from the original StackTracePlus.lua
 local stackTraceAlreadyInjected = false
+
+function getDebugInfoForCrash()
+    local info = "Additional Context:\nBalatro Version: " .. VERSION .. "\nModded Version: " .. MODDED_VERSION
+    local lovely_success, lovely = pcall(require, "lovely")
+    if lovely_success then
+        info = info .. "\nLovely Version: " .. lovely.VERSION
+    end
+    return info
+end
+
 function injectStackTrace()
     if (stackTraceAlreadyInjected) then
         return
@@ -512,6 +522,15 @@ function injectStackTrace()
             table.insert(err, "Invalid UTF-8 string in error message.")
         end
 
+        local success, msg = pcall(getDebugInfoForCrash)
+        if success and msg then
+            table.insert(err, '\n' .. msg)
+            sendInfoMessage(msg, 'StackTrace')
+        else
+            table.insert(err, "\n" .. "Failed to get additional context :/")
+            sendErrorMessage("Failed to get additional context :/\n" .. msg, 'StackTrace')
+        end
+
         for l in trace:gmatch("(.-)\n") do
             if not l:match("boot.lua") then
                 l = l:gsub("stack traceback:", "Traceback\n")
@@ -556,7 +575,9 @@ function injectStackTrace()
             local lineHeight = font:getHeight()
             local atBottom = scrollOffset == endHeight and scrollOffset ~= 0
             endHeight = #lines * lineHeight - love.graphics.getHeight() + pos * 2
-            if(endHeight < 0) then endHeight = 0 end
+            if (endHeight < 0) then
+                endHeight = 0
+            end
             if scrollOffset > endHeight or atBottom then
                 scrollOffset = endHeight
             end
@@ -636,6 +657,7 @@ function injectStackTrace()
 
     end
 
+    error('Error speedrun')
 end
 
 -- ----------------------------------------------
