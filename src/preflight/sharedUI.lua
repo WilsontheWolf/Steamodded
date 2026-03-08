@@ -81,6 +81,7 @@ function CanvasHelper:draw(dt)
     love.graphics.pop()
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.draw(self.canvas, self.conf.x, self.conf.y)
+    self.dirty = false
 end
 
 function CanvasHelper:__call(child, name)
@@ -154,13 +155,18 @@ end
 function Base:loop()
     love.event.pump()
 
-    for e, a, b, c in love.event.poll() do
-        if e == "quit" then
+    for n, a, b, c, d, e, f in love.event.poll() do
+        if n == "quit" then
             return 1
-        elseif e == "keypressed" and a == "escape" then
+        elseif n == "keypressed" and a == "escape" then
             return 1
-        elseif e == "keypressed" and a == "t" then
-            return 0
+            -- HACK: Make a better abstraction for this
+        elseif n == "keypressed" and self.body and self.body.child.keypressed then
+            self.body.child.keypressed(a, b, c)
+        elseif n == "wheelmoved" and self.body and self.body.child.wheelmoved then
+            self.body.child.wheelmoved(a, b, c)
+        elseif n == "gamepadaxis" and self.body and self.body.child.gamepadaxis then
+            self.body.child.gamepadaxis(a, b, c)
         end
     end
     local dt = love.timer.step()
@@ -181,7 +187,18 @@ function Base:__call(conf)
     if conf.body and type(conf.body.draw) == "function" then
         self.body = CanvasHelper(conf.body, "Body")
     end
+    if type(conf.eventHandler) == "function" then
+        self.eventHandler = conf.eventHandler
+    end
     return res
+end
+
+
+function M.newBigFont(font)
+    bigFont = font or love.graphics.newFont(150)
+end
+function M.getBigFont()
+    return bigFont
 end
 
 return M

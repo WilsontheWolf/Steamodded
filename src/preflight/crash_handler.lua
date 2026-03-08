@@ -20,7 +20,7 @@
 -- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 -- THE SOFTWARE.
 -- tables
-function loadStackTracePlus()
+local function loadStackTrace()
     local _G = _G
     local string, io, debug, coroutine = string, io, debug, coroutine
 
@@ -486,34 +486,49 @@ Stack Traceback
         m_user_known_functions[fun] = description
     end
 
-    return _M
+    return _M.stacktrace
 end
 
--- Note: The below code is not from the original StackTracePlus.lua
-local stackTraceAlreadyInjected = false
+local crashState = {}
 
-local function doRestart()
-    if SMODS and SMODS.restart_game then
-        SMODS.restart_game()
-    else
-        local test, msg = pcall(function()
-            require"lovely".reload_patches()
-        end)
-        if not test then sendErrorMessage("Failed to reload patches... " .. tostring(msg), "StackTrace") end
-        love.event.quit("restart")
-    end
-end
-
-function getDebugInfoForCrash()
-    local version = VERSION
-    if not version or type(version) ~= "string" then
-        local versionFile = love.filesystem.read("version.jkr")
-        if versionFile then
-            version = versionFile:match("[^\n]*") .. " (best guess)"
-        else
-            version = "???"
+local function cleanup()
+    -- Reset state.
+    if love.mouse then
+        love.mouse.setVisible(true)
+        love.mouse.setGrabbed(false)
+        love.mouse.setRelativeMode(false)
+        if love.mouse.isCursorSupported() then
+            love.mouse.setCursor()
         end
     end
+    if love.joystick then
+        -- Stop all joystick vibrations.
+        for i, v in ipairs(love.joystick.getJoysticks()) do
+            v:setVibration()
+        end
+    end
+    if love.audio then
+        love.audio.stop()
+    end
+
+    love.graphics.reset()
+    love.graphics.setNewFont("resources/fonts/m6x11plus.ttf", 20)
+
+    local background = {0, 0, 1}
+    if G and G.C and G.C.BLACK then
+        background = G.C.BLACK
+    end
+    love.graphics.clear(background)
+    love.graphics.origin()
+end
+
+local function collectInfo()
+    local info = {}
+    local sUtil = require"SMODS.preflight.sharedUtil"
+    crashState.additionalInfo = info
+
+    -- Game version
+    info.version = sUtil.getBalatroVersion()
     local modded_version = MODDED_VERSION
     if not modded_version or type(modded_version) ~= "string" then
         local moddedSuccess, reqVersion = pcall(require, "SMODS.version")
@@ -523,365 +538,272 @@ function getDebugInfoForCrash()
             modded_version = "???"
         end
     end
+    info.modded_version = modded_version
 
-    local info = "Additional Context:\nBalatro Version: " .. version .. "\nModded Version: " ..
-                     (modded_version)
-    local major, minor, revision, codename = love.getVersion()
-    info = info .. string.format("\nLÖVE Version: %d.%d.%d", major, minor, revision)
+    local major, minor, revision, codeName = love.getVersion()
+    info.love_version = string.format("%d.%d.%d (%s)", major, minor, revision, codeName)
+
     local lovely_success, lovely = pcall(require, "lovely")
     if lovely_success then
-        info = info .. "\nLovely Version: " .. lovely.version
+        info.lovely_version = lovely.version
     end
-	info = info .. "\nPlatform: " .. (love.system.getOS() or "???")
-    if SMODS and SMODS.Mods then
-        local mod_strings = ""
-        local lovely_strings = ""
-        local i = 1
-        local lovely_i = 1
-        for _, v in pairs(SMODS.Mods) do
-            if (v.can_load and (not v.meta_mod or v.lovely_only)) or (v.lovely and not v.can_load and not v.disabled) then
-                if v.lovely_only or (v.lovely and not v.can_load) then
-                    lovely_strings = lovely_strings .. "\n    " .. lovely_i .. ": " .. v.name
-                    lovely_i = lovely_i + 1
-                    if not v.can_load then
-                        lovely_strings = lovely_strings .. "\n        Has Steamodded mod that failed to load."
-                        if #v.load_issues.dependencies > 0 then
-                            lovely_strings = lovely_strings .. "\n        Missing Dependencies:"
-                            for k, v in ipairs(v.load_issues.dependencies) do
-                                lovely_strings = lovely_strings .. "\n            " .. k .. ". " .. v
-                            end
-                        end
-                        if #v.load_issues.conflicts > 0 then
-                            lovely_strings = lovely_strings .. "\n        Conflicts:"
-                            for k, v in ipairs(v.load_issues.conflicts) do
-                                lovely_strings = lovely_strings .. "\n            " .. k .. ". " .. v
-                            end
-                        end
-                        if v.load_issues.outdated then
-                            lovely_strings = lovely_strings .. "\n        Outdated Mod."
-                        end
-                        if v.load_issues.main_file_not_found then
-                            lovely_strings = lovely_strings .. "\n        Main file not found. (" .. v.main_file ..")"
-                        end
-                    end
-                else
-                    mod_strings = mod_strings .. "\n    " .. i .. ": " .. v.name .. " by " ..
-                                      table.concat(v.author, ", ") .. " [ID: " .. v.id ..
-                                      (v.priority ~= 0 and (", Priority: " .. v.priority) or "") ..
-                                      (v.version and v.version ~= '0.0.0' and (", Version: " .. v.version) or "") ..
-                                      (v.lovely and (", Uses Lovely") or "") .. "]"
-                    i = i + 1
-                    local debugInfo = v.debug_info
-                    if debugInfo then
-                        if type(debugInfo) == "string" then
-                            if #debugInfo ~= 0 then
-                                mod_strings = mod_strings .. "\n        " .. debugInfo
-                            end
-                        elseif type(debugInfo) == "table" then
-                            for kk, vv in pairs(debugInfo) do
-                                if type(vv) ~= 'nil' then
-                                    vv = tostring(vv)
-                                end
-                                if #vv ~= 0 then
-                                    mod_strings = mod_strings .. "\n        " .. kk .. ": " .. vv
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        info = info .. "\nSteamodded Mods:" .. mod_strings .. "\nLovely Mods:" .. lovely_strings
-    end
-    return info
+    info.platform = love.system.getOS() or "???"
+    -- TODO: MODS
 end
 
-function injectStackTrace()
-    if (stackTraceAlreadyInjected) then
-        return
-    end
-    stackTraceAlreadyInjected = true
-    local STP = loadStackTracePlus()
-    local utf8 = require("utf8")
+-- This is the crash handler for the crash handler
+local function fatalHandler(source, msg)
+    local message = "Crashception!\nAn error ocurred in the crash handler (" .. tostring(source or "Unknown") .. ")\n\n" .. tostring(msg) .. "\n\nPlease report this to the Steamodded Team"
+    love.graphics.reset()
+    love.graphics.setNewFont(20)
+    return function()
+        love.event.pump()
 
-    -- Modifed from https://love2d.org/wiki/love.errorhandler
-    function love.errorhandler(msg)
-        msg = tostring(msg)
-
-        if not sendErrorMessage then
-            function sendErrorMessage(msg)
-                print(msg)
-            end
-        end
-        if not sendInfoMessage then
-            function sendInfoMessage(msg)
-                print(msg)
-            end
-        end
-
-        sendErrorMessage("Oops! The game crashed\n" .. STP.stacktrace(msg), 'StackTrace')
-
-        if not love.window or not love.graphics or not love.event then
-            return
-        end
-
-        if not love.graphics.isCreated() or not love.window.isOpen() then
-            local success, status = pcall(love.window.setMode, 800, 600)
-            if not success or not status then
-                return
-            end
-        end
-
-        -- Reset state.
-        if love.mouse then
-            love.mouse.setVisible(true)
-            love.mouse.setGrabbed(false)
-            love.mouse.setRelativeMode(false)
-            if love.mouse.isCursorSupported() then
-                love.mouse.setCursor()
-            end
-        end
-        if love.joystick then
-            -- Stop all joystick vibrations.
-            for i, v in ipairs(love.joystick.getJoysticks()) do
-                v:setVibration()
-            end
-        end
-        if love.audio then
-            love.audio.stop()
-        end
-
-        love.graphics.reset()
-        local font = love.graphics.setNewFont("resources/fonts/m6x11plus.ttf", 20)
-
-        local background = {0, 0, 1}
-        if G and G.C and G.C.BLACK then
-            background = G.C.BLACK
-        end
-        love.graphics.clear(background)
-        love.graphics.origin()
-
-        local trace = STP.stacktrace("", 3)
-
-        local sanitizedmsg = {}
-        for char in msg:gmatch(utf8.charpattern) do
-            table.insert(sanitizedmsg, char)
-        end
-        sanitizedmsg = table.concat(sanitizedmsg)
-
-        local err = {}
-
-        if not smods_dupe then table.insert(err, "Oops! The game crashed:") end
-        
-        if smods_dupe then
-            table.insert(err, 'Duplicate installation of Steamodded detected! \n\nPlease remove the duplicate steamodded/smods folder/zip in your mods folder.\n\nPossible location: ' .. smods_dupe)
-        elseif sanitizedmsg:find("Syntax error: game.lua:4: '=' expected near 'Game'") then
-            table.insert(err,
-                'Duplicate installation of Steamodded detected! Please clean your installation: Steam Library > Balatro > Properties > Installed Files > Verify integrity of game files.')
-        elseif sanitizedmsg:find("Syntax error: game.lua:%d+: duplicate label 'continue'") then
-            table.insert(err,
-                'Duplicate installation of Steamodded detected! Please remove the duplicate steamodded/smods folder in your mods folder.')
-        else
-            table.insert(err, sanitizedmsg)
-        end
-        if #sanitizedmsg ~= #msg then
-            table.insert(err, "Invalid UTF-8 string in error message.")
-        end
-
-        if V and SMODS and SMODS.save_game and V(SMODS.save_game or '0.0.0') ~= V(SMODS.version or '0.0.0') then
-            table.insert(err, 'This crash may be caused by continuing a run that was started on a previous version of Steamodded. Try creating a new run.')
-        end
-
-        if V and V(MODDED_VERSION or '0.0.0') ~= V(RELEASE_VERSION or '0.0.0') then
-            table.insert(err, '\n\nDevelopment version of Steamodded detected! If you are not actively developing a mod, please try using the latest release instead.\n\n')
-        end
-
-        if not V and not smods_dupe then
-            table.insert(err, '\nA mod you have installed has caused a syntax error through patching. Please share this crash with the mod developer.\n')            
-        end
-
-        local success, msg = pcall(getDebugInfoForCrash)
-        if smods_dupe then
-            trace = ''
-        elseif success and msg then
-            table.insert(err, '\n' .. msg)
-            sendInfoMessage(msg, 'StackTrace')
-        else
-            table.insert(err, "\n" .. "Failed to get additional context :/")
-            sendErrorMessage("Failed to get additional context :/\n" .. msg, 'StackTrace')
-        end
-
-        for l in trace:gmatch("(.-)\n") do
-            table.insert(err, l)
-        end
-
-        local p = table.concat(err, "\n")
-
-        p = p:gsub("\t", "")
-        p = p:gsub("%[string \"(.-)\"%]", "%1")
-
-        local scrollOffset = 0
-        local endHeight = 0
-        love.keyboard.setKeyRepeat(true)
-
-        local function scrollDown(amt)
-            if amt == nil then
-                amt = 18
-            end
-            scrollOffset = scrollOffset + amt
-            if scrollOffset > endHeight then
-                scrollOffset = endHeight
-            end
-        end
-
-        local function scrollUp(amt)
-            if amt == nil then
-                amt = 18
-            end
-            scrollOffset = scrollOffset - amt
-            if scrollOffset < 0 then
-                scrollOffset = 0
+        for e, a, b, c in love.event.poll() do
+            if e == "quit" then
+                return 1
+            elseif e == "keypressed" and a == "escape" then
+                return 1
+            elseif e == "touchpressed" then
+                local name = love.window.getTitle()
+                if #name == 0 or name == "Untitled" then name = "Game" end
+                local buttons = {"OK", "Cancel"}
+                local pressed = love.window.showMessageBox("Quit "..name.."?", "", buttons)
+                if pressed == 1 then
+                    return 1
+                end
             end
         end
 
         local pos = 70
-        local arrowSize = 20
+        love.graphics.clear(0, 0 , 0)
+        love.graphics.printf(message, pos, pos, love.graphics.getWidth() - pos)
+        love.graphics.present()
 
-        local function calcEndHeight()
-            local font = love.graphics.getFont()
-            local rw, lines = font:getWrap(p, love.graphics.getWidth() - pos * 2)
-            local lineHeight = font:getHeight()
-            local atBottom = scrollOffset == endHeight and scrollOffset ~= 0
-            endHeight = #lines * lineHeight - love.graphics.getHeight() + pos * 2
-            if (endHeight < 0) then
-                endHeight = 0
-            end
-            if scrollOffset > endHeight or atBottom then
-                scrollOffset = endHeight
-            end
+        if love.timer then
+            love.timer.sleep(0.1)
         end
-
-        local function draw()
-            if not love.graphics.isActive() then
-                return
-            end
-            love.graphics.clear(background)
-            calcEndHeight()
-            love.graphics.printf(p, pos, pos - scrollOffset, love.graphics.getWidth() - pos * 2)
-            if scrollOffset ~= endHeight then
-                love.graphics.polygon("fill", love.graphics.getWidth() - (pos / 2),
-                    love.graphics.getHeight() - arrowSize, love.graphics.getWidth() - (pos / 2) + arrowSize,
-                    love.graphics.getHeight() - (arrowSize * 2), love.graphics.getWidth() - (pos / 2) - arrowSize,
-                    love.graphics.getHeight() - (arrowSize * 2))
-            end
-            if scrollOffset ~= 0 then
-                love.graphics.polygon("fill", love.graphics.getWidth() - (pos / 2), arrowSize,
-                    love.graphics.getWidth() - (pos / 2) + arrowSize, arrowSize * 2,
-                    love.graphics.getWidth() - (pos / 2) - arrowSize, arrowSize * 2)
-            end
-            love.graphics.present()
-        end
-
-        local fullErrorText = p
-        local function copyToClipboard()
-            if not love.system then
-                return
-            end
-            love.system.setClipboardText(fullErrorText)
-            p = p .. "\nCopied to clipboard!"
-        end
-
-        p = p .. "\n\nPress ESC to exit\nPress R to restart the game"
-        if love.system then
-            p = p .. "\nPress Ctrl+C or tap to copy this error"
-        end
-
-        if G then
-            -- Kill threads (makes restarting possible)
-            if G.SOUND_MANAGER and G.SOUND_MANAGER.channel then
-                G.SOUND_MANAGER.channel:push({
-                    type = 'kill'
-                })
-            end
-            if G.SAVE_MANAGER and G.SAVE_MANAGER.channel then
-                G.SAVE_MANAGER.channel:push({
-                    type = 'kill'
-                })
-            end
-            if G.HTTP_MANAGER and G.HTTP_MANAGER.channel then
-                G.HTTP_MANAGER.channel:push({
-                    type = 'kill'
-                })
-            end
-        end
-
-        return function()
-            love.event.pump()
-
-            for e, a, b, c in love.event.poll() do
-                if e == "quit" then
-                    return a or 0
-                elseif e == "keypressed" and a == "escape" then
-                    return 1
-                elseif e == "keypressed" and a == "c" and love.keyboard.isDown("lctrl", "rctrl") then
-                    copyToClipboard()
-                elseif e == "keypressed" and a == "r" then
-                    doRestart()
-                elseif e == "keypressed" and a == "down" then
-                    scrollDown()
-                elseif e == "keypressed" and a == "up" then
-                    scrollUp()
-                elseif e == "keypressed" and a == "pagedown" then
-                    scrollDown(love.graphics.getHeight())
-                elseif e == "keypressed" and a == "pageup" then
-                    scrollUp(love.graphics.getHeight())
-                elseif e == "keypressed" and a == "home" then
-                    scrollOffset = 0
-                elseif e == "keypressed" and a == "end" then
-                    scrollOffset = endHeight
-                elseif e == "wheelmoved" then
-                    scrollUp(b * 20)
-                elseif e == "gamepadpressed" and b == "dpdown" then
-                    scrollDown()
-                elseif e == "gamepadpressed" and b == "dpup" then
-                    scrollUp()
-                elseif e == "gamepadpressed" and b == "a" then
-                    doRestart()
-                elseif e == "gamepadpressed" and b == "x" then
-                    copyToClipboard()
-                elseif e == "gamepadpressed" and (b == "b" or b == "back" or b == "start") then
-                    return 1
-                elseif e == "touchpressed" then
-                    local name = love.window.getTitle()
-                    if #name == 0 or name == "Untitled" then
-                        name = "Game"
-                    end
-                    local buttons = {"OK", "Cancel", "Restart"}
-                    if love.system then
-                        buttons[4] = "Copy to clipboard"
-                    end
-                    local pressed = love.window.showMessageBox("Quit " .. name .. "?", "", buttons)
-                    if pressed == 1 then
-                        return 1
-                    elseif pressed == 3 then
-                        doRestart()
-                    elseif pressed == 4 then
-                        copyToClipboard()
-                    end
-                end
-            end
-
-            draw()
-
-            if love.timer then
-                love.timer.sleep(0.1)
-            end
-        end
-
     end
 end
 
-injectStackTrace()
+local function initUI()
+    local ui = require "SMODS.preflight.sharedUI"
+    local background = {0, 0, 1}
+    if G and G.C and G.C.BLACK then
+        background = G.C.BLACK
+    end
 
--- ----------------------------------------------
--- --------MOD CORE API STACKTRACE END-----------
+    local succ, font = pcall(love.graphics.newFont, "resources/fonts/m6x11plus.ttf", 200)
+    if not succ then
+        sendErrorMessage("Couldn't load desired font " .. tostring(font), "CrashHandler")
+        font = love.graphics.newFont(150)
+    end
+
+    ui.newBigFont(font)
+
+    local manager = {}
+    manager.scroll = 0
+
+    function manager:draw(dt, dirty)
+        local redraw = self.scrollChanged
+        local font = ui.getBigFont()
+        -- HACK: This should be in an update method
+        if self.lastGamepad and self.lastGamepad ~= 0 then
+            manager:updateScroll(self.lastGamepad * 800 * dt)
+            redraw = true
+        end
+        if dirty or not self.crashText then
+            redraw = true
+            local c = love.graphics.getCanvas()
+            local h = c:getHeight()
+            local w = c:getWidth()
+
+            local linePercent = 3 / 100
+            local scale = math.max(linePercent * h) / font:getHeight()
+            self.scale = scale
+            if scale > 1 then sendWarnMessage("Font scale is larger than actual size! (" .. tostring(scale) .."x) If this happens in a real situation, you need to update the font size or it will be blurry.", "CrashHandler") end
+
+            local infoStr = "Additional Info:"
+            do
+                local info = crashState.additionalInfo
+                if info.version then
+                    infoStr = infoStr .. "\nBalatro Version: " .. info.version
+                end
+                if info.modded_version then
+                    infoStr = infoStr .. "\nModded Version: " .. info.modded_version
+                end
+                if info.love_version then
+                    infoStr = infoStr .. "\nLÖVE Version: " .. info.love_version
+                end
+                if info.lovely_version then
+                    infoStr = infoStr .. "\nLovely Version: " .. info.lovely_version
+                end
+                if info.platform then
+                    infoStr = infoStr .. "\nPlatform: " .. info.platform
+                end
+                -- TODO: mods
+            end
+            local str = string.format("%s\n\n%s\n\n%s", crashState.msg, infoStr, crashState.stack)
+            local text = love.graphics.newText(font)
+            text:addf(str, w / scale, "left")
+            self.crashText = text
+            self.maxScroll = self.crashText:getHeight() - font:getHeight()
+        end
+
+        if redraw then
+            love.graphics.clear()
+            love.graphics.translate(0, -math.min(self.scroll * 10, self.maxScroll) * self.scale)
+            love.graphics.scale(self.scale)
+            love.graphics.draw(self.crashText, 0, 0)
+            self.scrollChanged = false
+        end
+    end
+
+    -- HACK: These input events need better handling (don't have a self)
+    function manager.keypressed(key)
+        if key == "down" then
+            manager:updateScroll(10)
+        end
+        if key == "up" then
+            manager:updateScroll(-10)
+        end
+        -- TODO: pgup/down 
+    end
+
+    function manager.wheelmoved(x, y)
+        manager:updateScroll(-y * 20)
+    end
+
+    function manager.gamepadaxis(joystick, axis, value)
+        if axis == "righty" then
+            manager.lastGamepad = value
+        end
+    end
+
+    -- Positive is down
+    function manager:updateScroll(value)
+        self.scroll = math.max(math.min(self.scroll + value, self.maxScroll / 10), 0)
+        self.scrollChanged = true
+    end
+
+    local base = ui.Base{
+        bg = background,
+        fg = {1,1,1,1},
+        pady = 10,
+        header = {
+            draw = function(self, dt, dirty)
+                if not dirty then
+                    return
+                end
+                love.graphics.clear()
+                local c = love.graphics.getCanvas()
+                local h = c:getHeight()
+                local w = c:getWidth()
+                ui.textScaleHelper({{"", 0.25}, "Oops! The game crashed!", {"witty quip goes here", 0.5}, {"", 0.25}}, 0, 0, w, h, true)
+            end,
+            full = false,
+        },
+        body = manager,
+    }
+    local fatal
+    local frame_time = 1 / 30 -- 30 fps
+
+    local function handleErr(err)
+        local stack = debug.traceback("", 2)
+        fatal = fatalHandler("main loop", err .. "\n\n" .. stack)
+        pcall(sendErrorMessage, "Error in crash loop\n" .. tostring(err) .. "\n" .. stack, "CrashHandler")
+    end
+
+    local function loop()
+        return base:loop()
+    end
+
+    return function()
+        if fatal then return fatal() end
+        local start = love.timer.getTime()
+        local status, ret = xpcall(loop, handleErr)
+        collectgarbage()
+        local fin = love.timer.getTime()
+        local wait = frame_time - (fin - start)
+        if wait < 0 then
+            love.timer.sleep(wait)
+        end
+        if not status then
+            return
+        end
+        return ret
+    end
+end
+
+function love.errorhandler(msg)
+    msg = tostring(msg)
+    crashState = {
+        msg = msg,
+    }
+
+    if not sendErrorMessage then
+        function sendErrorMessage(msg)
+            print(msg)
+        end
+    end
+    if not sendInfoMessage then
+        function sendInfoMessage(msg)
+            print(msg)
+        end
+    end
+    if not sendWarnMessage then
+        function sendWarnMessage(msg)
+            print(msg)
+        end
+    end
+
+    pcall(sendErrorMessage, "Oops! The game crashed\n" .. msg, "CrashHandler")
+    local tracebackStatus, traceback = pcall(loadStackTrace)
+    if not tracebackStatus then
+        crashState.stack = "Failed to load traceback method: " .. tostring(traceback)
+    else
+        local status, stack = pcall(loadStackTrace)
+        if status then
+            crashState.stack = stack()
+        else
+            crashState.stack = "Failed to get traceback: " .. tostring(stack)
+        end
+    end
+    pcall(sendErrorMessage, tostring(crashState.stack), "CrashHandler")
+
+    -- At this point, we've gotten enough info out to be useful. At this point we try to 
+    -- intalize the ui, and handle more complex functions
+    if not love.window or not love.graphics or not love.event then
+        return
+    end
+
+    if not love.graphics.isCreated() or not love.window.isOpen() then
+        local success, status = pcall(love.window.setMode, 800, 600)
+        if not success or not status then
+            return
+        end
+    end
+
+    do
+        local status, err = pcall(cleanup)
+        if not status then
+            return fatalHandler("cleanup", err)
+        end
+    end
+
+    do
+        local status, err = pcall(collectInfo)
+        if not status then
+            sendErrorMessage("Error collecting additonal info: " .. tostring(err), "CrashHandler")
+            crashState.dataCollectionError = tostring(err)
+        end
+    end
+
+    do
+        local status, errOrFunc = pcall(initUI)
+        if not status then
+            return fatalHandler("init ui", errOrFunc)
+        end
+        return errOrFunc
+    end
+end
